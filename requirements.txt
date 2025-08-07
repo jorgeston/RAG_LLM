@@ -4,3 +4,10 @@ pydantic
 python-dotenv
 langchain
 langchain-openai
+chromadb
+pypdf
+unstructured[pdf]
+langchain-community
+python-multipart
+langchain-chroma
+langchain-huggingface

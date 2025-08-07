@@ -1,19 +1,26 @@
-from fastapi import FastAPI, HTTPException
+import os
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import List, Literal
 
-# --- Pydantic Models (Schemas) ---
-# Modelo para la ingesta de documentos
-class IngestRequest(BaseModel):
-    content: str
-    document_type: Literal['pdf', 'text', 'html', 'markdown']
+# --- Nuevas importaciones para la lógica RAG ---
+from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.chat_models import ChatOllama 
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains import RetrievalQA
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredURLLoader, UnstructuredFileLoader
+from dotenv import load_dotenv
 
+# Cargar variables de entorno desde el archivo .env
+load_dotenv()
+
+# --- Modelos Pydantic (sin cambios) ---
 class IngestResponse(BaseModel):
     status: Literal['success', 'error']
     message: str
     chunks_created: int
 
-# Modelo para las consultas
 class QueryRequest(BaseModel):
     question: str
 
@@ -25,48 +32,106 @@ class QueryResponse(BaseModel):
     answer: str
     sources: List[Source]
 
-# --- FastAPI App Instance ---
-app = FastAPI(
-    title="GenAI RAG Microservice",
-    description="A RAG microservice with Langfuse observability.",
-    version="0.1.0",
+
+# --- Configuración Inicial del RAG ---
+# Esta sección es clave. La ponemos fuera de los endpoints para que no se reinicie con cada request.
+
+# 1. Inicializamos el modelo de Embeddings
+# Usaremos el de OpenAI, que es potente y estándar en la industria.
+embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+# 2. Inicializamos la Base de Datos Vectorial (en memoria)
+# ChromaDB es ideal para desarrollo rápido. `persist_directory` es opcional para guardar en disco.
+vectorstore = Chroma(embedding_function=embeddings, collection_name="document_collection")
+
+# 3. Inicializamos el LLM que usaremos para responder preguntas
+llm = ChatOllama(model="gemma:2b")
+
+# 4. Creamos la Cadena de Recuperación y Respuesta (Retrieval Chain)
+# Esta cadena une el LLM con la base de datos vectorial.
+# "stuff" es un método simple que "rellena" el prompt con el contexto recuperado.
+qa_chain = RetrievalQA.from_chain_type(
+    llm,
+    retriever=vectorstore.as_retriever(),
+    return_source_documents=True # Importante para devolver las fuentes
 )
 
-# --- API Endpoints ---
+
+# --- Aplicación FastAPI ---
+app = FastAPI(
+    title="GenAI RAG Microservice",
+    description="Un microservicio RAG con FastAPI.",
+    version="0.2.0",
+)
+
 @app.get("/health")
 def health_check():
-    """Verifica que el servicio esté funcionando."""
     return {"status": "ok"}
 
 @app.post("/ingest", response_model=IngestResponse)
-def ingest_document(request: IngestRequest):
-    """Endpoint para ingerir y procesar un documento."""
-    # Lógica de ingesta irá aquí. Por ahora, es un dummy.
-    print(f"Ingesting content of type: {request.document_type}")
+async def ingest_document(file: UploadFile = File(...), document_type: str = Form(...)):
+    """
+    Endpoint para ingerir un documento (PDF, HTML, etc.) y procesarlo.
+    Ahora acepta un archivo subido.
+    """
+    if not file:
+        raise HTTPException(status_code=400, detail="No file provided.")
 
-    # Simulación
-    chunks_creados = 15 
+    # Guardar temporalmente el archivo para que el loader pueda leerlo
+    temp_file_path = f"./temp_{file.filename}"
+    with open(temp_file_path, "wb") as buffer:
+        buffer.write(await file.read())
 
-    return {
-        "status": "success",
-        "message": f"Successfully ingested content.",
-        "chunks_created": chunks_creados
-    }
+    try:
+        if document_type == 'pdf':
+            loader = PyPDFLoader(temp_file_path)
+        else: # Para text, html, md, etc.
+            loader = UnstructuredFileLoader(temp_file_path)
+        
+        # 1. Cargar el documento
+        documents = loader.load()
+
+        # 2. Dividir el documento en chunks (fragmentos)
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = text_splitter.split_documents(documents)
+
+        # 3. "Vectorizar" los chunks y guardarlos en la base de datos
+        vectorstore.add_documents(chunks)
+
+        return {
+            "status": "success",
+            "message": f"Successfully ingested and processed {file.filename}",
+            "chunks_created": len(chunks)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Limpiar el archivo temporal
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+
 
 @app.post("/query", response_model=QueryResponse)
 def query_service(request: QueryRequest):
-    """Endpoint para hacer una pregunta al sistema RAG."""
-    # Lógica de consulta irá aquí. Por ahora, es un dummy.
-    print(f"Received question: {request.question}")
+    """
+    Endpoint para hacer una pregunta al sistema RAG.
+    """
+    try:
+        # Usamos la cadena QA para obtener la respuesta
+        result = qa_chain({"query": request.question})
+        
+        # Extraemos la respuesta y las fuentes
+        answer = result.get("result", "No se encontró una respuesta.")
+        source_documents = result.get("source_documents", [])
+        
+        # Formateamos las fuentes para la respuesta de la API
+        sources = []
+        for doc in source_documents:
+            # La página puede no estar siempre disponible, depende del tipo de documento
+            page_num = doc.metadata.get('page', 0) 
+            sources.append(Source(page=page_num, text=doc.page_content))
 
-    # Simulación
-    respuesta_generada = "Esta es una respuesta generada por el LLM basada en los documentos."
-    fuentes = [
-        {"page": 5, "text": "Python es un lenguaje de programación interpretado..."},
-        {"page": 12, "text": "Las listas son una de las estructuras de datos más versátiles..."}
-    ]
+        return QueryResponse(answer=answer, sources=sources)
 
-    return {
-        "answer": respuesta_generada,
-        "sources": fuentes
-    }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
