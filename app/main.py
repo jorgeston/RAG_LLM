@@ -3,13 +3,13 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import List, Literal
 
-# --- Nuevas importaciones para la lógica RAG ---
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.chat_models import ChatOllama 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import RetrievalQA
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredURLLoader, UnstructuredFileLoader
+from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
 
 # Cargar variables de entorno desde el archivo .env
@@ -47,13 +47,29 @@ vectorstore = Chroma(embedding_function=embeddings, collection_name="document_co
 # 3. Inicializamos el LLM que usaremos para responder preguntas
 llm = ChatOllama(model="gemma:2b")
 
-# 4. Creamos la Cadena de Recuperación y Respuesta (Retrieval Chain)
+# 4. Creamos un Prompt Template para dar mejores instrucciones
+prompt_template = """Usa las siguientes piezas de contexto para responder la pregunta al final.
+Si no sabes la respuesta o el contexto no es suficiente, simplemente di que no puedes responder con la información proporcionada, no intentes inventar una respuesta.
+Proporciona una respuesta concisa y directa.
+
+Contexto: {context}
+
+Pregunta: {question}
+
+Respuesta útil:"""
+
+PROMPT = PromptTemplate(
+    template=prompt_template, input_variables=["context", "question"]
+)
+
+# 5. Creamos la Cadena de Recuperación y Respuesta (Retrieval Chain)
 # Esta cadena une el LLM con la base de datos vectorial.
 # "stuff" es un método simple que "rellena" el prompt con el contexto recuperado.
 qa_chain = RetrievalQA.from_chain_type(
     llm,
     retriever=vectorstore.as_retriever(),
-    return_source_documents=True # Importante para devolver las fuentes
+    return_source_documents=True, # Importante para devolver las fuentes
+    chain_type_kwargs={"prompt": PROMPT}
 )
 
 
@@ -71,9 +87,12 @@ def health_check():
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest_document(file: UploadFile = File(...), document_type: str = Form(...)):
     """
-    Endpoint para ingerir un documento (PDF, HTML, etc.) y procesarlo.
-    Ahora acepta un archivo subido.
+    Endpoint para ingerir y procesar un documento.
+    Ahora acepta un archivo subido y gestiona el estado global.
     """
+    # Declaramos que vamos a modificar estas variables globales
+    global vectorstore, qa_chain
+
     if not file:
         raise HTTPException(status_code=400, detail="No file provided.")
 
@@ -83,20 +102,37 @@ async def ingest_document(file: UploadFile = File(...), document_type: str = For
         buffer.write(await file.read())
 
     try:
+        # Limpiar la colección anterior para evitar la contaminación de contexto
+        if vectorstore:
+            vectorstore.delete_collection()
+
+        # Cargar el documento con el loader apropiado
         if document_type == 'pdf':
             loader = PyPDFLoader(temp_file_path)
         else: # Para text, html, md, etc.
             loader = UnstructuredFileLoader(temp_file_path)
         
-        # 1. Cargar el documento
         documents = loader.load()
 
-        # 2. Dividir el documento en chunks (fragmentos)
+        # Dividir el documento en chunks
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         chunks = text_splitter.split_documents(documents)
 
-        # 3. "Vectorizar" los chunks y guardarlos en la base de datos
-        vectorstore.add_documents(chunks)
+        # Crear el nuevo vectorstore con los nuevos chunks
+        vectorstore = Chroma.from_documents(
+            documents=chunks,
+            embedding=embeddings
+        )
+
+        # -------- ¡IMPORTANTE! --------
+        # Actualizar la cadena QA para que use el nuevo vectorstore
+        qa_chain = RetrievalQA.from_chain_type(
+            llm,
+            retriever=vectorstore.as_retriever(),
+            return_source_documents=True,
+            chain_type_kwargs={"prompt": PROMPT}
+        )
+        # --------------------------------
 
         return {
             "status": "success",
@@ -104,6 +140,8 @@ async def ingest_document(file: UploadFile = File(...), document_type: str = For
             "chunks_created": len(chunks)
         }
     except Exception as e:
+        # Esto nos dará un error más detallado en la terminal si algo falla
+        print(f"Error during ingestion: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         # Limpiar el archivo temporal
