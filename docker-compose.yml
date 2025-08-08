@@ -9,13 +9,10 @@ services:
       - "8000:8000"
     volumes:
       - ./app:/app/app
-    environment:
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
-      - LANGFUSE_HOST=${LANGFUSE_HOST}
+    env_file:
+      - .env
     depends_on:
       - ollama
-    # Esto asegura que la API pueda comunicarse con Ollama por su nombre de servicio
     networks:
       - rag_network
 

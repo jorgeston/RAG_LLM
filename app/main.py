@@ -24,10 +24,19 @@ from langfuse import observe
 # Asegúrate de tener LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, etc.
 load_dotenv()
 
-# Inicializa el cliente global de Langfuse.
-# Cargará las credenciales desde las variables de entorno.
-langfuse = Langfuse()
+# --- Inicialización de Langfuse (Método Explícito y Robusto) ---
+try:
+    public_key = os.environ["LANGFUSE_PUBLIC_KEY"]
+    secret_key = os.environ["LANGFUSE_SECRET_KEY"]
+    host = os.environ["LANGFUSE_HOST"]
+except KeyError:
+    raise ValueError("Variables de entorno de Langfuse no configuradas. Revisa tu archivo .env y el docker-compose.yml")
 
+langfuse = Langfuse(
+    public_key=public_key,
+    secret_key=secret_key,
+    host=host
+)
 # --- MODELOS PYDANTIC (API Schemas) ---
 
 class IngestResponse(BaseModel):
