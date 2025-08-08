@@ -13,3 +13,6 @@ langchain-chroma
 langchain-huggingface
 sentence-transformers
 langfuse
+pytest
+requests
+pytest-mock
