@@ -169,4 +169,4 @@ To run the tests, follow these steps on your local machine (outside of Docker):
 
 * **Persistent Vector Store:** Configure ChromaDB to persist its data to a Docker volume, allowing the knowledge base to survive container restarts.
 * **Multi-Document Management:** Evolve the API to handle a persistent library of multiple documents, likely by associating chunks with a unique `document_id`.
-* **Asynchronous Tracing:** For very high-throughput scenarios, the Langfuse exporting process could be made fully asynchronous to avoid any potential blocking on the main application thread.
+* **Asynchronous Tracing:** For very high-throughput scenarios, the Langfuse exporting process could be made fully asynchronous to avoid any potential blocking on the main application thread. 
