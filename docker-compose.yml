@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  # Servicio para nuestra API de RAG
+  api:
+    build: .
+    container_name: rag_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+    environment:
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+    depends_on:
+      - ollama
+    # Esto asegura que la API pueda comunicarse con Ollama por su nombre de servicio
+    networks:
+      - rag_network
+
+  # Servicio para el LLM local con Ollama
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_service
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - rag_network
+
+volumes:
+  ollama_data:
+
+networks:
+  rag_network:

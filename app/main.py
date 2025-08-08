@@ -59,7 +59,7 @@ vectorstore = Chroma(
 )
 
 # 3. Modelo de Lenguaje (Local y Gratuito vía Ollama)
-llm = ChatOllama(model="gemma:2b")
+llm = ChatOllama(model="gemma:2b", base_url="http://ollama:11434")
 
 # 4. Plantilla de Prompt (Para dar instrucciones claras al LLM)
 prompt_template = """Usa las siguientes piezas de contexto para responder la pregunta al final.
