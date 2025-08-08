@@ -2,20 +2,34 @@ import os
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import List, Literal
-
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.chat_models import ChatOllama 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains import RetrievalQA
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredURLLoader, UnstructuredFileLoader
-from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
 
+# --- LANGCHAIN & AI IMPORTS ---
+from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.chat_models import ChatOllama
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains import RetrievalQA
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredFileLoader
+from langchain.prompts import PromptTemplate
+
+# --- LANGFUSE IMPORTS (v3) ---
+# Importaciones correctas basadas en la investigación del SDK v3
+from langfuse import Langfuse, get_client
+from langfuse import observe
+
+# --- CONFIGURACIÓN INICIAL ---
+
 # Cargar variables de entorno desde el archivo .env
+# Asegúrate de tener LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, etc.
 load_dotenv()
 
-# --- Modelos Pydantic (sin cambios) ---
+# Inicializa el cliente global de Langfuse.
+# Cargará las credenciales desde las variables de entorno.
+langfuse = Langfuse()
+
+# --- MODELOS PYDANTIC (API Schemas) ---
+
 class IngestResponse(BaseModel):
     status: Literal['success', 'error']
     message: str
@@ -32,22 +46,22 @@ class QueryResponse(BaseModel):
     answer: str
     sources: List[Source]
 
+# --- CONFIGURACIÓN DEL MOTOR RAG ---
+# Estos objetos se inicializan una vez al arrancar el servidor.
 
-# --- Configuración Inicial del RAG ---
-# Esta sección es clave. La ponemos fuera de los endpoints para que no se reinicie con cada request.
-
-# 1. Inicializamos el modelo de Embeddings
-# Usaremos el de OpenAI, que es potente y estándar en la industria.
+# 1. Modelo de Embeddings (Local y Gratuito)
 embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-# 2. Inicializamos la Base de Datos Vectorial (en memoria)
-# ChromaDB es ideal para desarrollo rápido. `persist_directory` es opcional para guardar en disco.
-vectorstore = Chroma(embedding_function=embeddings, collection_name="document_collection")
+# 2. Base de Datos Vectorial (Inicialmente vacía y en memoria)
+vectorstore = Chroma(
+    embedding_function=embeddings,
+    collection_name="document_collection"
+)
 
-# 3. Inicializamos el LLM que usaremos para responder preguntas
+# 3. Modelo de Lenguaje (Local y Gratuito vía Ollama)
 llm = ChatOllama(model="gemma:2b")
 
-# 4. Creamos un Prompt Template para dar mejores instrucciones
+# 4. Plantilla de Prompt (Para dar instrucciones claras al LLM)
 prompt_template = """Usa las siguientes piezas de contexto para responder la pregunta al final.
 Si no sabes la respuesta o el contexto no es suficiente, simplemente di que no puedes responder con la información proporcionada, no intentes inventar una respuesta.
 Proporciona una respuesta concisa y directa.
@@ -57,82 +71,112 @@ Contexto: {context}
 Pregunta: {question}
 
 Respuesta útil:"""
-
 PROMPT = PromptTemplate(
     template=prompt_template, input_variables=["context", "question"]
 )
 
-# 5. Creamos la Cadena de Recuperación y Respuesta (Retrieval Chain)
-# Esta cadena une el LLM con la base de datos vectorial.
-# "stuff" es un método simple que "rellena" el prompt con el contexto recuperado.
+# 5. Cadena de Recuperación y Respuesta (Inicialmente con el vectorstore vacío)
 qa_chain = RetrievalQA.from_chain_type(
     llm,
     retriever=vectorstore.as_retriever(),
-    return_source_documents=True, # Importante para devolver las fuentes
+    return_source_documents=True,
     chain_type_kwargs={"prompt": PROMPT}
 )
 
+# --- APLICACIÓN FASTAPI ---
 
-# --- Aplicación FastAPI ---
 app = FastAPI(
     title="GenAI RAG Microservice",
-    description="Un microservicio RAG con FastAPI.",
-    version="0.2.0",
+    description="Un microservicio RAG con FastAPI, Ollama y observabilidad Langfuse.",
+    version="1.0.0",
 )
+
+# --- LÓGICA DE RAG INSTRUMENTADA CON LANGFUSE ---
+
+def ejecutar_pipeline_rag_instrumentado(query: str):
+    """
+    Ejecuta el pipeline RAG completo con instrumentación detallada usando gestores de contexto.
+    Adaptado de la Sección 2.3 del documento de investigación sobre Langfuse v3.
+    """
+    lf_client = get_client()
+
+    # Span Padre para todo el pipeline.
+    with lf_client.start_as_current_span(name="rag-pipeline", input={"query": query}) as pipeline_span:
+        
+        # Span anidado para el paso de Recuperación (Retrieval).
+        with lf_client.start_as_current_span(name="retrieval") as retrieval_span:
+            retriever = vectorstore.as_retriever()
+            documentos_recuperados = retriever.get_relevant_documents(query)
+            
+            # CRÍTICO: Registrar los documentos recuperados como la salida de este span.
+            retrieval_span.update(
+                output={"retrieved_docs": [doc.page_content for doc in documentos_recuperados]}
+            )
+        
+        # Formatear el contexto para el prompt del LLM.
+        contexto_formateado = "\n".join(f"- {doc.page_content}" for doc in documentos_recuperados)
+        prompt_completo = PROMPT.format(context=contexto_formateado, question=query)
+
+        # Generación anidada para la llamada al LLM.
+        with lf_client.start_as_current_generation(
+            name="synthesis-generation",
+            model=llm.model,
+            input=prompt_completo,
+            model_parameters={"temperature": 0}
+        ) as generation:
+            # Usamos nuestra cadena QA para obtener la respuesta
+            result = qa_chain({"query": query})
+            respuesta_llm = result.get("result", "No se encontró una respuesta.")
+            
+            generation.update(output=respuesta_llm)
+            pipeline_span.update(output={"final_answer": respuesta_llm})
+            
+            return result
+
+# --- ENDPOINTS DE LA API ---
 
 @app.get("/health")
 def health_check():
+    """Verifica que el servicio esté funcionando."""
     return {"status": "ok"}
 
 @app.post("/ingest", response_model=IngestResponse)
+@observe()
 async def ingest_document(file: UploadFile = File(...), document_type: str = Form(...)):
-    """
-    Endpoint para ingerir y procesar un documento.
-    Ahora acepta un archivo subido y gestiona el estado global.
-    """
-    # Declaramos que vamos a modificar estas variables globales
+    """Endpoint para ingerir, procesar y vectorizar un documento."""
     global vectorstore, qa_chain
 
-    if not file:
+    if not file or not file.filename:
         raise HTTPException(status_code=400, detail="No file provided.")
 
-    # Guardar temporalmente el archivo para que el loader pueda leerlo
     temp_file_path = f"./temp_{file.filename}"
     with open(temp_file_path, "wb") as buffer:
         buffer.write(await file.read())
 
     try:
-        # Limpiar la colección anterior para evitar la contaminación de contexto
         if vectorstore:
             vectorstore.delete_collection()
 
-        # Cargar el documento con el loader apropiado
         if document_type == 'pdf':
             loader = PyPDFLoader(temp_file_path)
-        else: # Para text, html, md, etc.
+        else:
             loader = UnstructuredFileLoader(temp_file_path)
         
         documents = loader.load()
-
-        # Dividir el documento en chunks
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         chunks = text_splitter.split_documents(documents)
 
-        # Crear el nuevo vectorstore con los nuevos chunks
         vectorstore = Chroma.from_documents(
             documents=chunks,
             embedding=embeddings
         )
 
-        # -------- ¡IMPORTANTE! --------
-        # Actualizar la cadena QA para que use el nuevo vectorstore
         qa_chain = RetrievalQA.from_chain_type(
             llm,
             retriever=vectorstore.as_retriever(),
             return_source_documents=True,
             chain_type_kwargs={"prompt": PROMPT}
         )
-        # --------------------------------
 
         return {
             "status": "success",
@@ -140,36 +184,27 @@ async def ingest_document(file: UploadFile = File(...), document_type: str = For
             "chunks_created": len(chunks)
         }
     except Exception as e:
-        # Esto nos dará un error más detallado en la terminal si algo falla
         print(f"Error during ingestion: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        # Limpiar el archivo temporal
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
 
-
 @app.post("/query", response_model=QueryResponse)
+@observe()
 def query_service(request: QueryRequest):
-    """
-    Endpoint para hacer una pregunta al sistema RAG.
-    """
+    """Endpoint que recibe una pregunta y ejecuta el pipeline RAG instrumentado."""
     try:
-        # Usamos la cadena QA para obtener la respuesta
-        result = qa_chain({"query": request.question})
+        result = ejecutar_pipeline_rag_instrumentado(request.question)
         
-        # Extraemos la respuesta y las fuentes
         answer = result.get("result", "No se encontró una respuesta.")
         source_documents = result.get("source_documents", [])
         
-        # Formateamos las fuentes para la respuesta de la API
         sources = []
         for doc in source_documents:
-            # La página puede no estar siempre disponible, depende del tipo de documento
-            page_num = doc.metadata.get('page', 0) 
+            page_num = doc.metadata.get('page', 0)
             sources.append(Source(page=page_num, text=doc.page_content))
 
         return QueryResponse(answer=answer, sources=sources)
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -11,3 +11,5 @@ langchain-community
 python-multipart
 langchain-chroma
 langchain-huggingface
+sentence-transformers
+langfuse
