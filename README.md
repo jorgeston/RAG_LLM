@@ -54,7 +54,7 @@ Follow these steps to set up and run the entire environment on your local machin
     # Get these from your project settings in Langfuse Cloud
     LANGFUSE_PUBLIC_KEY="pk-lf-..."
     LANGFUSE_SECRET_KEY="sk-lf-..."
-    LANGFUSE_HOST="[https://cloud.langfuse.com](https://cloud.langfuse.com)"
+    LANGFUSE_HOST="https://cloud.langfuse.com"
     ```
 
 ### 3. Execution
