@@ -127,6 +127,32 @@ Sends a query to the RAG system based on the last ingested document.
 
 ---
 
+## 🧪 Testing
+
+This project includes a suite of unit tests to ensure the API layer is functioning correctly. The tests use `pytest` and `pytest-mock` to test endpoint logic in isolation.
+
+To run the tests, follow these steps on your local machine (outside of Docker):
+
+1.  **Create and activate a local virtual environment:**
+    ```bash
+    python -m venv venv
+    .\venv\Scripts\activate
+    ```
+
+2.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+3.  **Run pytest:**
+    From the root directory of the project, simply run:
+    ```bash
+    pytest
+    ```
+    All tests should pass, confirming the API endpoints are correctly set up.
+
+---
+
 ## 🧠 Architectural Decisions & Trade-offs
 
 * **Local-First & Open-Source Stack:** The decision was made to use a fully local stack (Ollama, Hugging Face Embeddings) instead of relying on paid, proprietary APIs. This approach prioritizes **data privacy** (documents never leave the local environment), **zero cost**, and **full control** over every component. The trade-off is that inference performance is dependent on local hardware.
@@ -143,4 +169,4 @@ Sends a query to the RAG system based on the last ingested document.
 
 * **Persistent Vector Store:** Configure ChromaDB to persist its data to a Docker volume, allowing the knowledge base to survive container restarts.
 * **Multi-Document Management:** Evolve the API to handle a persistent library of multiple documents, likely by associating chunks with a unique `document_id`.
-* **Unit & Integration Tests:** Implement a test suite using `pytest` to validate the API endpoints and the core logic of the RAG pipeline, as suggested in the assignment's "extra credit" section.
+* **Asynchronous Tracing:** For very high-throughput scenarios, the Langfuse exporting process could be made fully asynchronous to avoid any potential blocking on the main application thread.
