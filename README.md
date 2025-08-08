@@ -35,7 +35,7 @@ Follow these steps to set up and run the entire environment on your local machin
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/jorgeston/RAG_LLM.git](https://github.com/jorgeston/RAG_LLM.git)
+    git clone https://github.com/jorgeston/RAG_LLM.git
     cd RAG_LLM
     ```
 
